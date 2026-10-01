@@ -104,7 +104,8 @@ class Mask:
                 raise RuntimeError("mask returned ERROR")
 
     async def command(self, plaintext: bytes):
-        await self.client.write_gatt_char(CMD_CHAR, encrypt(plaintext), response=False)
+        # The Android app writes with response; write-without-response gets dropped on macOS.
+        await self.client.write_gatt_char(CMD_CHAR, encrypt(plaintext), response=True)
 
     async def light(self, value: int):
         await self.command(frame(b"LIGHT", max(1, min(100, value))))
@@ -131,7 +132,7 @@ class Mask:
         await self.command(announce)
         await self.expect(b"DATSOK")
         for packet in chunk_payload(payload):
-            await self.client.write_gatt_char(DATA_CHAR, packet, response=False)
+            await self.client.write_gatt_char(DATA_CHAR, packet, response=True)
             await self.expect(b"REOK")
         await self.command(commit)
         await self.expect(b"DATCPOK")
@@ -182,6 +183,7 @@ async def run(args):
         elif args.cmd == "diy":
             await mask.upload_diy(image_payload(args.path), args.slot)
             await mask.command(frame(b"PLAY", 1, args.slot, random_pad=False))
+        await asyncio.sleep(0.5)  # let the mask process the last write before disconnecting
 
 
 def main():

@@ -40,6 +40,9 @@ Masks typically advertise a name like `MASK-xxxxxx`, but the app does not filter
 | Music-rhythm stream write | `d44bc439-abfd-45a2-b575-92541612960b` | yes |
 | OTA service (Panchip) | `0000fd00-…`, data `fd01`, ctrl `fd02` | n/a |
 
+All writes use Android's default write type, i.e. **write with response**. A
+write-without-response to the command characteristic is silently dropped (seen on macOS).
+
 `BleDevice.onEncrypt()` is the identity function. Encryption happens only where the app
 explicitly calls `Agreement.getEncryptData()`, so bulk data packets go out in plaintext.
 
@@ -71,10 +74,10 @@ Notifications from the mask are decrypted the same way.
 | Preset image | `05 'IMAG' n` | n = list position, 70 presets |
 | Preset animation | `05 'ANIM' n` | app skips id 4 (positions ≥ 4 are sent as n+1) |
 | Loop all animations | `04 'LOOA'` | |
-| Scroll/text mode | `05 'MODE' m` | m = 1..4. UI order maps 0→1, 1→3, 2→4, 3→2 |
+| Text mode | `05 'MODE' m` | 1 = static, 2 = blink, 3 = scroll left, 4 = scroll right |
 | Text colour | `06 'FC' en r g b` | en = 1 enables the solid colour |
 | Text background colour | `06 'BC' en r g b` | |
-| Colour/gradient preset | `03 'M' en n` | |
+| Colour/gradient preset | `03 'M' en n` | n 0..3 = text gradients, 4..7 = background gradients |
 | Stop music rhythm | `04 'SOUT'` | |
 | Enter DIY | `06 'SMVEW' 01` / `03` | |
 | Exit DIY | `06 'SMVEW' 00` (no data) / `02` (save) | |
@@ -125,8 +128,12 @@ The crop is fixed at **46 × 58 px**. Pixels are emitted **column-major** (`for 
 Written to `…960b`, encrypted, one block per FFT frame:
 
 ```
-0F mode b0 b1 … b11 00 00      12 spectrum bars
+0F mode b0 b1 … b11 00 00
 ```
+
+mode = 0..4 (pattern). The 12 bytes hold 24 bars of level 0..9, two per byte
+(high nibble first). The app computes them from a 128-point FFT with a rolling maximum
+(`VisualizerUtil.getWaveFormData`), and sends a frame roughly every 120 ms.
 
 ## Firmware
 
