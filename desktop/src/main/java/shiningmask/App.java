@@ -86,6 +86,8 @@ public final class App {
 
     // DIY state
     private BufferedImage diyImage;
+    private DrawCanvas drawCanvas;
+    private JTabbedPane tabs;
     private LedView diyPreview;
 
     // rhythm state
@@ -121,10 +123,11 @@ public final class App {
         root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         root.add(buildTopBar(), BorderLayout.NORTH);
 
-        JTabbedPane tabs = new JTabbedPane();
+        tabs = new JTabbedPane();
         tabs.addTab("Images", buildImagesTab());
         tabs.addTab("Animations", buildAnimationsTab());
         tabs.addTab("Text", buildTextTab());
+        tabs.addTab("Draw", buildDrawTab());
         tabs.addTab("DIY photo", buildDiyTab());
         tabs.addTab("Rhythm", buildRhythmTab());
         tabs.addTab("Advanced", buildAdvancedTab());
@@ -146,7 +149,7 @@ public final class App {
         root.add(bottom, BorderLayout.SOUTH);
 
         frame.setContentPane(root);
-        frame.setSize(900, 760);
+        frame.setSize(920, 860);
         frame.setLocationRelativeTo(null);
         setConnected(false);
         frame.setVisible(true);
@@ -541,15 +544,16 @@ public final class App {
                 log("Open an image first.");
                 return;
             }
-            byte[] payload = Protocol.diyPayload(diyImage);
-            int s = (Integer) slot.getValue();
-            progress.setValue(0);
-            progress.setVisible(true);
-            withMask("DIY upload", m -> {
-                m.uploadDiy(payload, s, pct -> ui(() -> progress.setValue(pct)));
-                m.request(Protocol.slotList("PLAY", new int[] {s}), "PLAYOK");
-                log("Image uploaded to slot " + s + ".");
-            });
+            uploadImage(diyImage, (Integer) slot.getValue());
+        });
+        JButton edit = new JButton("Edit in Draw");
+        edit.addActionListener(e -> {
+            if (diyImage == null) {
+                log("Open an image first.");
+                return;
+            }
+            drawCanvas.setImage(diyImage);
+            tabs.setSelectedIndex(tabs.indexOfTab("Draw"));
         });
         JButton play = gated(new JButton("Show slot"));
         play.addActionListener(e -> {
@@ -567,11 +571,206 @@ public final class App {
             log("Mask holds " + (r[5] & 0xFF) + " DIY image(s).");
         }));
         JPanel p = new JPanel(new BorderLayout(6, 6));
-        p.add(row(open, new JLabel("Slot"), slot, upload, play, delete, count), BorderLayout.NORTH);
+        p.add(row(open, edit, new JLabel("Slot"), slot, upload, play, delete, count), BorderLayout.NORTH);
         JPanel holder = new JPanel(new FlowLayout(FlowLayout.CENTER));
         holder.add(diyPreview);
         p.add(holder, BorderLayout.CENTER);
         return wrap(p, "Photos are cropped to 46 x 58 LEDs.");
+    }
+
+    /** Upload a 46x58 image to a DIY slot and show it. */
+    private void uploadImage(BufferedImage img, int slot) {
+        byte[] payload = Protocol.diyPayload(img);
+        progress.setValue(0);
+        progress.setVisible(true);
+        withMask("Image upload", m -> {
+            m.uploadDiy(payload, slot, pct -> ui(() -> progress.setValue(pct)));
+            m.request(Protocol.slotList("PLAY", new int[] {slot}), "PLAYOK");
+            log("Image uploaded to slot " + slot + ".");
+        });
+    }
+
+    // ---------------------------------------------------------------- draw
+
+    private static final Color[] PALETTE = {
+        Color.WHITE, new Color(255, 0, 0), new Color(255, 128, 0), new Color(255, 230, 0),
+        new Color(0, 255, 0), new Color(0, 255, 200), new Color(0, 128, 255), new Color(0, 0, 255),
+        new Color(160, 0, 255), new Color(255, 0, 200), new Color(255, 120, 160), new Color(128, 64, 0),
+        new Color(128, 128, 128), new Color(40, 40, 40)
+    };
+
+    private JComponent buildDrawTab() {
+        drawCanvas = new DrawCanvas();
+        File autosave = new File(System.getProperty("user.home"), ".shiningmask-drawing.png");
+        try {
+            if (autosave.isFile()) {
+                BufferedImage img = ImageIO.read(autosave);
+                if (img != null) {
+                    drawCanvas.setImage(Protocol.fitDiy(img));
+                }
+            }
+        } catch (Exception ignored) {
+            // start blank
+        }
+
+        JButton colorButton = new JButton("  ");
+        colorButton.setOpaque(true);
+        colorButton.setBorderPainted(false);
+        colorButton.setBackground(drawCanvas.getColor());
+        colorButton.setToolTipText("Current colour (click to choose)");
+        java.util.function.Consumer<Color> setColor = c -> {
+            drawCanvas.setColor(c);
+            colorButton.setBackground(c);
+        };
+        colorButton.addActionListener(e -> {
+            Color c = JColorChooser.showDialog(frame, "Pen colour", drawCanvas.getColor());
+            if (c != null) {
+                setColor.accept(c);
+            }
+        });
+        drawCanvas.setOnPick(setColor);
+
+        JPanel palette = new JPanel(new GridLayout(1, PALETTE.length, 2, 2));
+        for (Color c : PALETTE) {
+            JButton b = new JButton();
+            b.setPreferredSize(new Dimension(22, 22));
+            b.setOpaque(true);
+            b.setBorderPainted(false);
+            b.setBackground(c);
+            b.addActionListener(e -> setColor.accept(c));
+            palette.add(b);
+        }
+
+        javax.swing.ButtonGroup group = new javax.swing.ButtonGroup();
+        JPanel tools = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        String[][] toolDefs = {
+            {"PEN", "Pen"}, {"ERASER", "Eraser"}, {"FILL", "Fill"}, {"LINE", "Line"}, {"RECT", "Rectangle"},
+            {"PICKER", "Pick colour"}
+        };
+        for (String[] t : toolDefs) {
+            javax.swing.JToggleButton b = new javax.swing.JToggleButton(t[1], t[0].equals("PEN"));
+            b.addActionListener(e -> drawCanvas.setTool(DrawCanvas.Tool.valueOf(t[0])));
+            group.add(b);
+            tools.add(b);
+        }
+
+        JSpinner brush = new JSpinner(new SpinnerNumberModel(1, 1, 6, 1));
+        brush.addChangeListener(e -> drawCanvas.setBrush((Integer) brush.getValue()));
+        JCheckBox mirror = new JCheckBox("Mirror");
+        mirror.setToolTipText("Paint both halves of the face at once");
+        mirror.addActionListener(e -> drawCanvas.setMirror(mirror.isSelected()));
+        JCheckBox dots = new JCheckBox("LED dots", true);
+        dots.addActionListener(e -> drawCanvas.setGrid(dots.isSelected()));
+        JSlider zoom = new JSlider(4, 14, 7);
+        zoom.setPreferredSize(new Dimension(100, 20));
+        zoom.addChangeListener(e -> drawCanvas.setCell(zoom.getValue()));
+
+        JButton undo = new JButton("Undo");
+        undo.addActionListener(e -> drawCanvas.undo());
+        JButton redo = new JButton("Redo");
+        redo.addActionListener(e -> drawCanvas.redo());
+        JButton clear = new JButton("Clear");
+        clear.addActionListener(e -> drawCanvas.clear());
+        JButton fillAll = new JButton("Fill all");
+        fillAll.addActionListener(e -> drawCanvas.fillAll());
+        JButton flip = new JButton("Flip");
+        flip.addActionListener(e -> drawCanvas.flipHorizontal());
+        JButton left = new JButton("\u2190");
+        left.addActionListener(e -> drawCanvas.shift(-1, 0));
+        JButton right = new JButton("\u2192");
+        right.addActionListener(e -> drawCanvas.shift(1, 0));
+        JButton up = new JButton("\u2191");
+        up.addActionListener(e -> drawCanvas.shift(0, -1));
+        JButton down = new JButton("\u2193");
+        down.addActionListener(e -> drawCanvas.shift(0, 1));
+
+        JButton open = new JButton("Import image...");
+        open.addActionListener(e -> {
+            File f = chooseFile(false);
+            if (f == null) {
+                return;
+            }
+            try {
+                BufferedImage src = ImageIO.read(f);
+                if (src == null) {
+                    throw new IllegalArgumentException("unsupported image");
+                }
+                drawCanvas.setImage(Protocol.fitDiy(src));
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(frame, "Could not open image: " + ex.getMessage());
+            }
+        });
+        JButton save = new JButton("Save PNG...");
+        save.addActionListener(e -> {
+            File f = chooseFile(true);
+            if (f == null) {
+                return;
+            }
+            if (!f.getName().toLowerCase().endsWith(".png")) {
+                f = new File(f.getParentFile(), f.getName() + ".png");
+            }
+            try {
+                ImageIO.write(drawCanvas.getImage(), "png", f);
+                log("Saved " + f);
+            } catch (Exception ex) {
+                log("Save failed: " + ex.getMessage());
+            }
+        });
+
+        JSpinner slot = new JSpinner(new SpinnerNumberModel(prefs.getInt("drawSlot", 20), 1, 20, 1));
+        JButton send = gated(new JButton("Send to mask"));
+        send.setToolTipText("Uploads the drawing to the chosen DIY slot and shows it");
+        send.addActionListener(e -> {
+            int s = (Integer) slot.getValue();
+            prefs.putInt("drawSlot", s);
+            uploadImage(drawCanvas.getImage(), s);
+        });
+
+        drawCanvas.setOnChange(() -> {
+            try {
+                ImageIO.write(drawCanvas.getImage(), "png", autosave);
+            } catch (Exception ignored) {
+                // autosave is best effort
+            }
+        });
+
+        // Keyboard shortcuts: Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z redo.
+        int menu = java.awt.Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+        javax.swing.InputMap im = drawCanvas.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+        im.put(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_Z, menu), "undo");
+        im.put(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_Z,
+                menu | java.awt.event.InputEvent.SHIFT_DOWN_MASK), "redo");
+        drawCanvas.getActionMap().put("undo", new javax.swing.AbstractAction() {
+            public void actionPerformed(java.awt.event.ActionEvent e) { drawCanvas.undo(); }
+        });
+        drawCanvas.getActionMap().put("redo", new javax.swing.AbstractAction() {
+            public void actionPerformed(java.awt.event.ActionEvent e) { drawCanvas.redo(); }
+        });
+
+        JPanel controls = new JPanel();
+        controls.setLayout(new BoxLayout(controls, BoxLayout.Y_AXIS));
+        controls.add(row(tools, new JLabel("Size"), brush, mirror));
+        controls.add(row(colorButton, palette));
+        controls.add(row(undo, redo, clear, fillAll, flip, left, right, up, down, new JLabel("Zoom"), zoom, dots));
+        controls.add(row(open, save, new JLabel("Slot"), slot, send));
+
+        JPanel p = new JPanel(new BorderLayout(6, 6));
+        p.add(controls, BorderLayout.NORTH);
+        JPanel holder = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        holder.add(drawCanvas);
+        p.add(holder, BorderLayout.CENTER);
+        return wrap(p, "Draw 46 x 58 pixels. Left click paints, right click erases. Your drawing is autosaved.");
+    }
+
+    private File chooseFile(boolean save) {
+        JFileChooser fc = new JFileChooser(prefs.get("lastDir", System.getProperty("user.home")));
+        fc.setFileFilter(new FileNameExtensionFilter("Images", "png", "jpg", "jpeg", "gif", "bmp"));
+        int r = save ? fc.showSaveDialog(frame) : fc.showOpenDialog(frame);
+        if (r != JFileChooser.APPROVE_OPTION) {
+            return null;
+        }
+        prefs.put("lastDir", fc.getSelectedFile().getParent());
+        return fc.getSelectedFile();
     }
 
     // ---------------------------------------------------------------- rhythm

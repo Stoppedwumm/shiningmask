@@ -24,6 +24,9 @@ Features:
 - brightness and speed
 - the 70 built-in images and 44 built-in animations, plus "loop all"
 - text: any installed font, live LED preview, static/scroll/blink, colours and gradients
+- drawing: paint your own 46×58 face with pen, eraser, fill, line, rectangle, colour picker,
+  mirror mode for symmetrical faces, undo/redo, PNG import/export and autosave, then send it
+  to a DIY slot
 - DIY photos: open any image, crop to 46×58, upload to slots 1–20, show, delete
 - music rhythm from the microphone
 - raw command console and a log of every command and reply
