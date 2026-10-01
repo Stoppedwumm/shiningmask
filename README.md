@@ -28,8 +28,25 @@ Features:
   mirror mode for symmetrical faces, undo/redo, PNG import/export and autosave, then send it
   to a DIY slot
 - DIY photos: open any image, crop to 46×58, upload to slots 1–20, show, delete
+- strobe: free-running (1–25 Hz) or locked to **Ableton Link** (1/32 note … 2 bars), with
+  flash length, on/off brightness, latency compensation, a hold-to-strobe button and an option
+  to strobe only while Live is playing
 - music rhythm from the microphone
 - raw command console and a log of every command and reply
+
+### Ableton Link
+
+The app has a small, listen-only Link implementation in pure Java (`LinkClient.java`). It joins
+the Link multicast group (224.76.78.75:20808), follows the session's tempo, beat phase and
+start/stop state, and syncs its clock with a peer using Link's ping/pong measurement. Because it
+never announces itself it can't change the tempo, and it doesn't show up in Live's peer count.
+
+In Live, turn on Link under *Preferences → Link/Tempo/MIDI*. To use "only while Live is playing",
+also turn on *Start Stop Sync* there. The Mac and Live can be the same machine.
+
+The strobe works by switching the brightness. Each change is a Bluetooth write the mask has to
+acknowledge, which caps the rate; the Strobe tab shows the measured write time. Use
+*Latency compensation* to move the flashes earlier until they land on the beat.
 
 ### Build from source
 

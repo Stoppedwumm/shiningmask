@@ -130,6 +130,11 @@ public final class MaskConnection {
         write(Protocol.CMD_CHAR, Protocol.encrypt(plaintext), cmdWithResponse);
     }
 
+    /** Like {@link #command} but without logging, for high-rate effects like the strobe. */
+    public void commandQuiet(byte[] plaintext) {
+        write(Protocol.CMD_CHAR, Protocol.encrypt(plaintext), cmdWithResponse);
+    }
+
     public void rhythm(byte[] plaintext) {
         write(Protocol.RHYTHM_CHAR, Protocol.encrypt(plaintext), rhythmWithResponse);
     }

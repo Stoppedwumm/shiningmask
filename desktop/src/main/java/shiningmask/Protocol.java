@@ -90,6 +90,8 @@ public final class Protocol {
     }
 
     public static byte[] light(int v) { return frame("LIGHT", clamp(v, 1, 100)); }
+    /** Brightness without the app's lower bound of 1; used for the strobe "off" level. */
+    public static byte[] lightRaw(int v) { return frame("LIGHT", clamp(v, 0, 100)); }
     public static byte[] speed(int v) { return frame("SPEED", clamp(v, 1, 100)); }
     public static byte[] image(int n) { return frame("IMAG", n); }
     public static byte[] mode(int m) { return frame("MODE", m); }
