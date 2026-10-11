@@ -48,7 +48,7 @@ import org.simplejavable.Adapter;
 import org.simplejavable.Peripheral;
 
 /** Desktop replacement for the Shining Mask Android app. */
-public final class App {
+public final class App implements RemoteServer.Handler {
     private static final int PRESET_IMAGES = 70;
     private static final int PRESET_ANIMATIONS = 44;
     private static final String[] TEXT_MODES = {"Static", "Scroll left", "Scroll right", "Blink"};
@@ -67,6 +67,13 @@ public final class App {
     private final AudioRhythm audio = new AudioRhythm();
     private final LinkClient link = new LinkClient(this::log);
     private final Strobe strobe = new Strobe(() -> this.mask, link, this::log);
+    private final RemoteServer remote = new RemoteServer(this, this::log);
+    private final Map<String, JSlider> sliders = new java.util.HashMap<>();
+    private final java.util.Set<String> pendingApprovals = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private javax.swing.JRadioButton freeRadio;
+    private javax.swing.JRadioButton syncedRadio;
+    private JComboBox<String> divisionBox;
+    private JCheckBox linkOnBox;
 
     private JFrame frame;
     private JTextArea logArea;
@@ -116,6 +123,7 @@ public final class App {
                 audio.stop();
                 strobe.stop();
                 link.stop();
+                remote.stop();
                 MaskConnection m = mask;
                 if (m != null) {
                     m.disconnect();
@@ -135,6 +143,7 @@ public final class App {
         tabs.addTab("DIY photo", buildDiyTab());
         tabs.addTab("Strobe", buildStrobeTab());
         tabs.addTab("Rhythm", buildRhythmTab());
+        tabs.addTab("Remote", buildRemoteTab());
         tabs.addTab("Advanced", buildAdvancedTab());
 
         JPanel center = new JPanel(new BorderLayout(8, 8));
@@ -361,6 +370,7 @@ public final class App {
 
     private JComponent slider(String title, String key, int def, java.util.function.IntConsumer onSet) {
         JSlider s = gated(new JSlider(1, 100, prefs.getInt(key, def)));
+        sliders.put(key, s);
         JLabel value = new JLabel(String.valueOf(s.getValue()));
         value.setPreferredSize(new Dimension(32, 16));
         s.addChangeListener(e -> {
@@ -465,6 +475,7 @@ public final class App {
         JButton sendText = gated(new JButton("Send text"));
         sendText.addActionListener(e -> {
             prefs.put("text", input.getText());
+            rememberText(input.getText());
             prefs.put("font", (String) fontBox.getSelectedItem());
             prefs.putBoolean("bold", bold.isSelected());
             prefs.putInt("textMode", modeBox.getSelectedIndex());
@@ -821,8 +832,8 @@ public final class App {
             }
         });
 
-        javax.swing.JRadioButton free = new javax.swing.JRadioButton("Free rate", !prefs.getBoolean("strobeLink", false));
-        javax.swing.JRadioButton synced = new javax.swing.JRadioButton("Sync to Ableton Link", prefs.getBoolean("strobeLink", false));
+        javax.swing.JRadioButton free = freeRadio = new javax.swing.JRadioButton("Free rate", !prefs.getBoolean("strobeLink", false));
+        javax.swing.JRadioButton synced = syncedRadio = new javax.swing.JRadioButton("Sync to Ableton Link", prefs.getBoolean("strobeLink", false));
         javax.swing.ButtonGroup g = new javax.swing.ButtonGroup();
         g.add(free);
         g.add(synced);
@@ -835,6 +846,7 @@ public final class App {
         synced.addActionListener(syncChanged);
 
         JSlider hz = new JSlider(1, 25, prefs.getInt("strobeHz", 8));
+        sliders.put("strobeHz", hz);
         JLabel hzLabel = new JLabel();
         hz.addChangeListener(e -> {
             strobe.hz = hz.getValue();
@@ -844,7 +856,7 @@ public final class App {
         strobe.hz = hz.getValue();
         hzLabel.setText(hz.getValue() + " Hz");
 
-        JComboBox<String> division = new JComboBox<>(DIVISIONS);
+        JComboBox<String> division = divisionBox = new JComboBox<>(DIVISIONS);
         division.setSelectedIndex(prefs.getInt("strobeDiv", 2));
         strobe.beatsPerCycle = DIVISION_BEATS[division.getSelectedIndex()];
         division.addActionListener(e -> {
@@ -859,7 +871,7 @@ public final class App {
         tuning.add(labeledSlider("Latency compensation (ms)", "strobeLatency", 0, 250, 40, v -> strobe.latencyMs = v));
 
         // Link panel
-        JCheckBox linkOn = new JCheckBox("Enable Ableton Link", prefs.getBoolean("linkOn", false));
+        JCheckBox linkOn = linkOnBox = new JCheckBox("Enable Ableton Link", prefs.getBoolean("linkOn", false));
         JCheckBox onlyPlaying = new JCheckBox("Only while Live is playing (needs Start/Stop Sync in Live)",
                 prefs.getBoolean("strobePlaying", false));
         strobe.onlyWhilePlaying = onlyPlaying.isSelected();
@@ -939,6 +951,7 @@ public final class App {
     private JComponent labeledSlider(String title, String key, int min, int max, int def,
                                      java.util.function.IntConsumer onChange) {
         JSlider s = new JSlider(min, max, prefs.getInt(key, def));
+        sliders.put(key, s);
         JLabel value = new JLabel(String.valueOf(s.getValue()));
         value.setPreferredSize(new Dimension(36, 16));
         onChange.accept(s.getValue());
@@ -1032,6 +1045,340 @@ public final class App {
             }
         }
         ui(() -> rhythmPreview.setPixels(px));
+    }
+
+    // ---------------------------------------------------------------- remote control (Innioasis Y1)
+
+    private static final int MAX_TEXTS = 12;
+
+    private JComponent buildRemoteTab() {
+        JCheckBox enable = new JCheckBox("Allow remote control over the network", prefs.getBoolean("remoteOn", false));
+        JLabel where = new JLabel(" ");
+        Runnable apply = () -> {
+            prefs.putBoolean("remoteOn", enable.isSelected());
+            if (enable.isSelected()) {
+                try {
+                    remote.start();
+                    where.setText("Listening on " + RemoteServer.addresses() + "  port " + RemoteServer.HTTP_PORT);
+                } catch (Exception ex) {
+                    log("Remote control failed to start: " + ex.getMessage());
+                    enable.setSelected(false);
+                    where.setText(" ");
+                }
+            } else {
+                remote.stop();
+                where.setText(" ");
+            }
+        };
+        enable.addActionListener(e -> apply.run());
+        if (enable.isSelected()) {
+            apply.run();
+        }
+        DefaultComboBoxModel<String> approvedModel = new DefaultComboBoxModel<>();
+        Runnable refreshApproved = () -> {
+            approvedModel.removeAllElements();
+            for (String r : approvedRemotes().values()) {
+                approvedModel.addElement(r);
+            }
+        };
+        refreshApproved.run();
+        JComboBox<String> approved = new JComboBox<>(approvedModel);
+        approved.setPrototypeDisplayValue("Innioasis Y1 (192.168.100.100)   ");
+        JButton forget = new JButton("Forget all remotes");
+        forget.addActionListener(e -> {
+            prefs.remove("remotes");
+            refreshApproved.run();
+            log("All remotes forgotten; they will have to be approved again.");
+        });
+        new javax.swing.Timer(1000, e -> {
+            if (approvedModel.getSize() != approvedRemotes().size()) {
+                refreshApproved.run();
+            }
+        }).start();
+
+        JTextArea help = new JTextArea(
+                "Use an Innioasis Y1 (or any device running the Shining Mask Remote app) as a handheld remote.\n\n"
+                + "1. Put the Y1 and this computer on the same Wi-Fi network (a phone hotspot works).\n"
+                + "2. Tick the box above and connect to your mask here as usual.\n"
+                + "3. Open \"Mask Remote\" on the Y1. It finds this computer automatically; if not, enter the\n"
+                + "   address shown above under Settings.\n"
+                + "4. The first time, this computer asks you to approve the Y1.\n\n"
+                + "The computer keeps the Bluetooth connection to the mask: the Y1's Android 4.2 has no\n"
+                + "Bluetooth LE support, so it cannot talk to the mask directly.");
+        help.setEditable(false);
+        help.setOpaque(false);
+        JPanel p = new JPanel();
+        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+        p.add(row(enable));
+        p.add(row(where));
+        p.add(row(new JLabel("Approved remotes"), approved, forget));
+        p.add(row(help));
+        return wrap(p, "Remote control from an Innioasis Y1 over Wi-Fi.");
+    }
+
+    /** id -> "name (address)" */
+    private Map<String, String> approvedRemotes() {
+        Map<String, String> out = new LinkedHashMap<>();
+        String raw = prefs.get("remotes", "");
+        for (String entry : raw.split("\n")) {
+            int tab = entry.indexOf('\t');
+            if (tab > 0) {
+                out.put(entry.substring(0, tab), entry.substring(tab + 1));
+            }
+        }
+        return out;
+    }
+
+    @Override
+    public boolean isApproved(String remoteId) {
+        return approvedRemotes().containsKey(remoteId);
+    }
+
+    @Override
+    public void requestApproval(String remoteId, String name, String address) {
+        if (!pendingApprovals.add(remoteId)) {
+            return;
+        }
+        String safeName = name.replaceAll("[\\t\\n]", " ");
+        ui(() -> {
+            int r = JOptionPane.showConfirmDialog(frame,
+                    "\"" + safeName + "\" at " + address + " wants to control the mask.\nAllow it?",
+                    "Remote control", JOptionPane.YES_NO_OPTION);
+            if (r == JOptionPane.YES_OPTION) {
+                Map<String, String> m = approvedRemotes();
+                m.put(remoteId, safeName + " (" + address + ")");
+                StringBuilder sb = new StringBuilder();
+                for (Map.Entry<String, String> e : m.entrySet()) {
+                    sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
+                }
+                prefs.put("remotes", sb.toString());
+                log("Remote approved: " + safeName + " (" + address + ")");
+            }
+            // Ask again on the next request only after a pause, so a "No" isn't immediately re-asked.
+            new javax.swing.Timer(r == JOptionPane.YES_OPTION ? 0 : 30_000, e -> pendingApprovals.remove(remoteId)) {
+                { setRepeats(false); }
+            }.start();
+        });
+    }
+
+    private void rememberText(String text) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        List<String> texts = recentTexts();
+        texts.remove(text);
+        texts.add(0, text);
+        while (texts.size() > MAX_TEXTS) {
+            texts.remove(texts.size() - 1);
+        }
+        prefs.put("recentTexts", String.join("\n", texts));
+    }
+
+    private List<String> recentTexts() {
+        List<String> out = new ArrayList<>();
+        for (String t : prefs.get("recentTexts", "HELLO\nDROP IT\n<3").split("\n")) {
+            if (!t.isBlank()) {
+                out.add(t);
+            }
+        }
+        return out;
+    }
+
+    /** Render and upload text with the Text tab's saved font, mode and colour. */
+    private void sendTextFromRemote(String text) {
+        int style = prefs.getBoolean("bold", true) ? Font.BOLD : Font.PLAIN;
+        Font f = new Font(prefs.get("font", Font.SANS_SERIF), style, 16);
+        byte[] bitmap = Protocol.textBitmap(Protocol.renderText(text, f));
+        int mode = TEXT_MODE_VALUES[Math.max(0, Math.min(TEXT_MODE_VALUES.length - 1, prefs.getInt("textMode", 1)))];
+        Color color = textColor;
+        int speed = prefs.getInt("speed", 50);
+        rememberText(text);
+        progress.setValue(0);
+        progress.setVisible(true);
+        withMask("Text upload", m -> {
+            m.uploadText(bitmap, color, mode, speed, pct -> ui(() -> progress.setValue(pct)));
+            log("Text sent from remote: " + text);
+        });
+    }
+
+    private static <T> T onEdt(java.util.concurrent.Callable<T> c) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            try {
+                return c.call();
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }
+        Object[] box = new Object[1];
+        RuntimeException[] err = new RuntimeException[1];
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                try {
+                    box[0] = c.call();
+                } catch (Exception e) {
+                    err[0] = e instanceof RuntimeException re ? re : new IllegalStateException(e);
+                }
+            });
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        if (err[0] != null) {
+            throw err[0];
+        }
+        @SuppressWarnings("unchecked")
+        T t = (T) box[0];
+        return t;
+    }
+
+    @Override
+    public String stateJson() {
+        return onEdt(() -> {
+            MaskConnection m = mask;
+            String maskName = m == null ? null : (String) deviceBox.getSelectedItem();
+            if (maskName != null && maskName.contains("  (")) {
+                maskName = maskName.substring(0, maskName.indexOf("  ("));
+            }
+            LinkClient.Timeline tl = link.isRunning() ? link.timeline() : null;
+            double phase = link.isRunning() ? link.phaseAt(LinkClient.hostMicros(), 4) : Double.NaN;
+            StringBuilder divs = new StringBuilder();
+            for (String d : DIVISIONS) {
+                divs.append(divs.length() == 0 ? "" : ",").append(RemoteServer.json(d));
+            }
+            StringBuilder texts = new StringBuilder();
+            for (String t : recentTexts()) {
+                texts.append(texts.length() == 0 ? "" : ",").append(RemoteServer.json(t));
+            }
+            StringBuilder devices = new StringBuilder();
+            for (int i = 0; i < deviceBox.getItemCount(); i++) {
+                devices.append(devices.length() == 0 ? "" : ",").append(RemoteServer.json(deviceBox.getItemAt(i)));
+            }
+            return "{"
+                    + "\"connected\":" + (m != null)
+                    + ",\"mask\":" + RemoteServer.json(maskName)
+                    + ",\"devices\":[" + devices + "]"
+                    + ",\"status\":" + RemoteServer.json(status.getText())
+                    + ",\"brightness\":" + sliderValue("brightness", 50)
+                    + ",\"speed\":" + sliderValue("speed", 50)
+                    + ",\"images\":" + PRESET_IMAGES
+                    + ",\"anims\":" + PRESET_ANIMATIONS
+                    + ",\"slots\":20"
+                    + ",\"texts\":[" + texts + "]"
+                    + ",\"strobe\":{"
+                    + "\"on\":" + strobe.isRunning()
+                    + ",\"latched\":" + (strobeToggle != null && strobeToggle.isSelected())
+                    + ",\"link\":" + (syncedRadio != null && syncedRadio.isSelected())
+                    + ",\"hz\":" + sliderValue("strobeHz", 8)
+                    + ",\"div\":" + (divisionBox == null ? 2 : divisionBox.getSelectedIndex())
+                    + ",\"divs\":[" + divs + "]"
+                    + ",\"duty\":" + sliderValue("strobeDuty", 50)
+                    + ",\"onLevel\":" + sliderValue("strobeOn", 100)
+                    + ",\"offLevel\":" + sliderValue("strobeOff", 1)
+                    + "}"
+                    + ",\"link\":{"
+                    + "\"enabled\":" + link.isRunning()
+                    + ",\"peers\":" + (link.isRunning() ? link.numPeers() : 0)
+                    + ",\"bpm\":" + (tl == null ? 0 : String.format(java.util.Locale.ROOT, "%.2f", tl.tempo()))
+                    + ",\"synced\":" + (link.isRunning() && link.isSynced())
+                    + ",\"playing\":" + (link.isRunning() && link.isPlaying())
+                    + ",\"beat\":" + (Double.isNaN(phase) ? -1 : (int) phase)
+                    + ",\"phase\":" + (Double.isNaN(phase) ? -1 : String.format(java.util.Locale.ROOT, "%.4f", phase))
+                    + "}"
+                    + "}";
+        });
+    }
+
+    private int sliderValue(String key, int def) {
+        JSlider s = sliders.get(key);
+        return s == null ? prefs.getInt(key, def) : s.getValue();
+    }
+
+    private static int intParam(Map<String, String> p, String key, int def) {
+        try {
+            return Integer.parseInt(p.getOrDefault(key, String.valueOf(def)).trim());
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    @Override
+    public String act(Map<String, String> p) {
+        String a = p.getOrDefault("a", "");
+        int n = intParam(p, "n", 0);
+        int v = intParam(p, "v", 0);
+        boolean on = "1".equals(p.get("on")) || "true".equals(p.get("on"));
+        java.util.Set<String> needMask = java.util.Set.of("light", "speed", "image", "anim", "loop", "slot", "text",
+                "strobe", "hold");
+        if (needMask.contains(a) && mask == null) {
+            return "Mask not connected";
+        }
+        return onEdt(() -> {
+            switch (a) {
+                case "light" -> setSlider("brightness", v);
+                case "speed" -> setSlider("speed", v);
+                case "hz" -> setSlider("strobeHz", v);
+                case "duty" -> setSlider("strobeDuty", v);
+                case "onLevel" -> setSlider("strobeOn", v);
+                case "offLevel" -> setSlider("strobeOff", v);
+                case "image" -> send(Protocol.image(Protocol.clamp(n, 0, PRESET_IMAGES - 1)));
+                case "anim" -> send(Protocol.animationByPosition(Protocol.clamp(n, 0, PRESET_ANIMATIONS - 1)));
+                case "loop" -> send(Protocol.loopAnimations());
+                case "slot" -> {
+                    int slot = Protocol.clamp(n, 1, 20);
+                    withMask("Play", m -> m.request(Protocol.slotList("PLAY", new int[] {slot}), "PLAYOK"));
+                }
+                case "text" -> {
+                    String t = p.getOrDefault("s", "");
+                    if (t.isBlank()) {
+                        return "empty text";
+                    }
+                    sendTextFromRemote(t.length() > 200 ? t.substring(0, 200) : t);
+                }
+                case "strobe" -> {
+                    if (strobeToggle.isSelected() != on) {
+                        strobeToggle.doClick();
+                    }
+                }
+                case "hold" -> {
+                    if (on && !strobe.isRunning()) {
+                        strobe.start(prefs.getInt("brightness", 50));
+                    } else if (!on && !strobeToggle.isSelected()) {
+                        strobe.stop();
+                    }
+                }
+                case "sync" -> (on ? syncedRadio : freeRadio).doClick();
+                case "div" -> divisionBox.setSelectedIndex(Protocol.clamp(n, 0, DIVISIONS.length - 1));
+                case "link" -> {
+                    if (linkOnBox.isSelected() != on) {
+                        linkOnBox.doClick();
+                    }
+                }
+                case "connect" -> {
+                    if (mask == null && deviceBox.getItemCount() > 0) {
+                        if (p.containsKey("n")) {
+                            deviceBox.setSelectedIndex(Protocol.clamp(n, 0, deviceBox.getItemCount() - 1));
+                        }
+                        toggleConnect();
+                    }
+                }
+                case "disconnect" -> {
+                    if (mask != null) {
+                        toggleConnect();
+                    }
+                }
+                case "scan" -> scan();
+                default -> {
+                    return "unknown action: " + a;
+                }
+            }
+            return null;
+        });
+    }
+
+    private void setSlider(String key, int value) {
+        JSlider s = sliders.get(key);
+        if (s != null) {
+            s.setValue(Protocol.clamp(value, s.getMinimum(), s.getMaximum()));
+        }
     }
 
     // ---------------------------------------------------------------- advanced

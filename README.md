@@ -55,6 +55,52 @@ cd desktop
 mvn package          # -> desktop/target/shiningmask.jar
 ```
 
+## Innioasis Y1 remote
+
+[`dist/MaskRemote.apk`](dist/MaskRemote.apk) turns an Innioasis Y1 into a handheld remote with
+click-wheel controls. It works with Live, Link sync and everything else in the desktop app.
+
+The Y1 can't talk to the mask itself. It runs Android 4.2.2 with MediaTek's own Bluetooth
+stack, which has no Bluetooth LE API (no `BluetoothGatt`, no `android.hardware.bluetooth_le`).
+So the computer keeps the Bluetooth connection to the mask, and the Y1 controls the computer
+over Wi-Fi.
+
+**Setup**
+
+1. On the computer, open the desktop app's **Remote** tab and tick *Allow remote control over
+   the network*, then connect to the mask as usual.
+2. Install the APK on the Y1. Either drag `MaskRemote.apk` onto the
+   [Innioasis Updater](https://innioasis.app) window, or run `adb install -r MaskRemote.apk`.
+   Both need USB debugging on the Y1.
+3. The stock Y1 software has no app drawer. Open **Settings → Launcher**, choose
+   **Mask Remote** and tap *Just once*. "Exit to music player" in the remote's menu takes you
+   back.
+4. Put the Y1 on the same Wi-Fi as the computer; a phone hotspot is fine. The remote finds the
+   computer by itself. If it doesn't, enter the computer's address under *Settings → Enter
+   address* (the Remote tab on the computer shows it).
+5. The first time, the computer asks whether to allow the Y1. Click *Yes*.
+
+**Controls**
+
+| Y1 control | Does |
+|---|---|
+| Wheel | move through the menu; in edit mode, change the value (spinning fast takes bigger steps) |
+| Centre | open / select; on a value, start or finish editing |
+| Centre held on *Hold to strobe* | strobe while held |
+| Menu / Back | go back |
+| Play/Pause | strobe on/off |
+| Prev / Next | previous / next image (or animation / DIY slot, whichever you used last) |
+
+The menu has: strobe and hold-to-strobe, strobe settings (free or Ableton Link timing, rate,
+division, flash length, on/off brightness, Link on/off), brightness, speed, the 70 images, the 44
+animations, the 20 DIY slots, recent texts (sent with the Text tab's font and colours), mask
+connect/scan, and settings.
+
+The remote speaks plain HTTP on port 47320 and is found by a UDP broadcast on port 47321. Each
+remote has to be approved once on the computer, and approvals can be revoked on the Remote tab.
+
+Build it with `cd y1-remote && ./gradlew assembleRelease` (needs the Android SDK).
+
 ## Python client
 
 `shiningmask.py` is a small command-line client built on bleak:
